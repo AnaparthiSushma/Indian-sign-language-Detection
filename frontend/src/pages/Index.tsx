@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Hand, Type, BarChart3 } from 'lucide-react';
+
 import Header from '@/components/Header';
 import CameraFeed from '@/components/CameraFeed';
 import PredictionDisplay from '@/components/PredictionDisplay';
@@ -29,8 +30,6 @@ const Index = () => {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isConnected] = useState(true);
   const [currentPrediction, setCurrentPrediction] = useState<Prediction | null>(null);
-
-  // ✅ MUST NEVER BE NULL
   const [translatedText, setTranslatedText] = useState<string>("");
 
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -43,64 +42,52 @@ const Index = () => {
     accuracy: 0.98
   });
 
-  /* ---------------- Python realtime_predict.py equivalents ---------------- */
-  const frameCountRef = useRef(0);                 // FRAME_SKIP = 3
-  const predictionQueueRef = useRef<string[]>([]); // deque(maxlen=4)
-  const lastCharRef = useRef<string>("");          // suppress duplicates
+  const frameCountRef = useRef(0);
+  const predictionQueueRef = useRef<string[]>([]);
+  const lastCharRef = useRef<string>("");
+  const lastPredictionTimeRef = useRef<number>(Date.now());
 
-  /* ---------------- Handle landmarks from CameraFeed ---------------- */
+  const clearAll = useCallback(() => {
+    setTranslatedText("");
+    setCurrentPrediction(null);
+    lastCharRef.current = "";
+    predictionQueueRef.current = [];
+    frameCountRef.current = 0;
+    console.log("🧹 Cleared all predictions");
+  }, []);
 
   const handleLandmarksDetected = useCallback(
     async (flatLandmarks: number[] | null) => {
-
-      console.log("📥 Index received landmarks:", flatLandmarks?.length);
-
       if (!flatLandmarks || flatLandmarks.length !== 126) return;
 
-      /* FRAME SKIP */
       frameCountRef.current++;
       if (frameCountRef.current % 3 !== 0) return;
 
-      /* Reject weak landmark frames */
-      
-
       try {
         const result = await predictLandmarks(flatLandmarks);
-
-        // ✅ Guard against null / low confidence
         if (!result || !result.label || result.confidence < 0.6) return;
 
-        console.log("FINAL LABEL:", result.label);
+        lastPredictionTimeRef.current = Date.now();
 
-        /* Smoothing window */
         const queue = predictionQueueRef.current;
         queue.push(result.label);
         if (queue.length > 4) queue.shift();
 
         const stableCount = queue.filter(v => v === result.label).length;
-        if (stableCount <1) return;
+        if (stableCount < 1) return;
 
-        /* Prevent duplicate characters */
-        /*if (result.label === lastCharRef.current) return;
-        lastCharRef.current = result.label;*/
+        if (result.label === lastCharRef.current) return;
+        lastCharRef.current = result.label;
 
-        const prediction: Prediction = {
-          text: result.label,          // ✅ MUST be label
+        setCurrentPrediction({
+          text: result.label,
           confidence: result.confidence,
           type: 'letter',
           timestamp: new Date()
-        };
+        });
 
-        setCurrentPrediction({
-  text: result.label,
-  confidence: result.confidence,
-  type: 'letter',
-  timestamp: new Date()
-});
+        setTranslatedText(prev => prev + result.label);
 
-        // ✅ SAFE APPEND (NO NULL POSSIBLE)
-
-setTranslatedText(prev => prev + result.label);
         setStats(prev => ({
           ...prev,
           signsDetected: prev.signsDetected + 1
@@ -113,15 +100,29 @@ setTranslatedText(prev => prev + result.label);
     []
   );
 
-  /* ---------------- Text → Sign ---------------- */
+  // Auto-space on pause
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      if (
+        isCameraActive &&
+        translatedText.length > 0 &&
+        now - lastPredictionTimeRef.current > 2000 &&
+        !translatedText.endsWith(" ")
+      ) {
+        setTranslatedText(prev => prev + " ");
+        lastCharRef.current = "";
+      }
+    }, 300);
+
+    return () => clearInterval(interval);
+  }, [isCameraActive, translatedText]);
 
   const handleTextToSign = useCallback((text: string) => {
     setIsTranslating(true);
-
     setTimeout(() => {
       setTextToSignInput(text);
       setIsTranslating(false);
-
       const entry: HistoryEntry = {
         id: Date.now().toString(),
         text,
@@ -134,8 +135,6 @@ setTranslatedText(prev => prev + result.label);
 
   const handleClearHistory = useCallback(() => setHistory([]), []);
 
-  /* ---------------- Save history when camera stops ---------------- */
-
   useEffect(() => {
     if (!isCameraActive && translatedText) {
       const entry: HistoryEntry = {
@@ -144,9 +143,7 @@ setTranslatedText(prev => prev + result.label);
         timestamp: new Date(),
         mode: 'sign-to-text'
       };
-
       setHistory(prev => [entry, ...prev].slice(0, 50));
-
       setTranslatedText("");
       setCurrentPrediction(null);
       lastCharRef.current = "";
@@ -159,6 +156,7 @@ setTranslatedText(prev => prev + result.label);
       <div className="container mx-auto px-4 py-6 max-w-7xl">
         <Header isConnected={isConnected} />
 
+        {/* MODE + STATS */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -179,21 +177,38 @@ setTranslatedText(prev => prev + result.label);
           </div>
         </motion.div>
 
-        <div className="mt-6 grid lg:grid-cols-3 gap-6">
-          <motion.div className="lg:col-span-2">
+        {/* MAIN GRID */}
+        <div className="mt-8 grid lg:grid-cols-3 gap-6">
+          {/* LEFT COLUMN */}
+          <motion.div
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.2 }}
+            className="lg:col-span-2 space-y-4"
+          >
             {mode === 'sign-to-text' ? (
-              <>
+              <div className="space-y-4 rounded-xl border bg-card p-4 shadow-sm">
                 <CameraFeed
                   onLandmarks={handleLandmarksDetected}
                   isActive={isCameraActive}
                   onToggle={() => setIsCameraActive(!isCameraActive)}
                 />
+
+                <div className="flex justify-end">
+                  <button
+                    onClick={clearAll}
+                    className="px-4 py-2 rounded-md bg-destructive text-white text-sm hover:opacity-90"
+                  >
+                    Clear
+                  </button>
+                </div>
+
                 <PredictionDisplay
                   currentPrediction={currentPrediction}
                   translatedText={translatedText}
                   isDetecting={isCameraActive}
                 />
-              </>
+              </div>
             ) : (
               <TextToSign
                 onTranslate={handleTextToSign}
@@ -203,10 +218,30 @@ setTranslatedText(prev => prev + result.label);
             )}
           </motion.div>
 
-          <motion.div className="h-[600px]">
-            <TranslationHistory history={history} onClear={handleClearHistory} />
+          {/* RIGHT COLUMN */}
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.3 }}
+            className="h-[600px]"
+          >
+            <TranslationHistory
+              history={history}
+              onClear={handleClearHistory}
+            />
           </motion.div>
         </div>
+
+        {/* FOOTER */}
+        <motion.footer
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.4 }}
+          className="mt-10 text-center text-sm text-muted-foreground"
+        >
+          Powered by MediaPipe & Machine Learning •{" "}
+          <span className="text-primary">Gesture Bridge</span> • Indian Sign Language
+        </motion.footer>
       </div>
     </div>
   );
