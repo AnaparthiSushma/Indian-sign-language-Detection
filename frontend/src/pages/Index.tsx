@@ -44,7 +44,6 @@ const Index = () => {
   });
 
   /* ---------------- Python realtime_predict.py equivalents ---------------- */
-
   const frameCountRef = useRef(0);                 // FRAME_SKIP = 3
   const predictionQueueRef = useRef<string[]>([]); // deque(maxlen=4)
   const lastCharRef = useRef<string>("");          // suppress duplicates
